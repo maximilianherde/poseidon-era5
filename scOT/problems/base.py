@@ -155,6 +155,13 @@ def get_dataset(dataset, **kwargs):
                 default_time_settings = {"max_num_time_steps": 7, "time_step_size": 2}
             kwargs = {**default_time_settings, **kwargs}
             from .reaction_diffusion.allen_cahn import AllenCahn as dset
+    elif "era5" in dataset:
+        if "era5.velocity" in dataset:
+            default_time_settings = {"max_num_time_steps": 14 * 4, "time_step_size": 1}
+            kwargs = {**default_time_settings, **kwargs}
+            from .era5 import ERA5_UV as dset
+        else:
+            raise ValueError(f"Unknown dataset {dataset}")
     else:
         raise ValueError(f"Unknown dataset {dataset}")
 
