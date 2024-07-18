@@ -1255,6 +1255,30 @@ class ScOT(Swinv2PreTrainedModel):
             ]
         )
 
+        self.adapter_encoder = nn.Sequential(
+            nn.Conv2d(
+                config.num_channels, config.num_channels, kernel_size=(121, 1), stride=1
+            ),  # 128 lon.
+            nn.ConvTranspose2d(
+                config.num_channels, config.num_channels, kernel_size=9, stride=1
+            ),  # 128 lat
+        )
+
+        self.adapter_decoder = nn.Sequential(
+            nn.Conv2d(
+                config.num_out_channels,
+                config.num_out_channels,
+                kernel_size=9,
+                stride=1,
+            ),  # 120 lat
+            nn.ConvTranspose2d(
+                config.num_out_channels,
+                config.num_out_channels,
+                kernel_size=(121, 1),
+                stride=1,
+            ),  # 240 lon
+        )
+
         self.post_init()
 
     def get_input_embeddings(self):
@@ -1333,6 +1357,8 @@ class ScOT(Swinv2PreTrainedModel):
                 [self.num_layers_encoder, self.num_layers_decoder]
             )
 
+        pixel_values = self.adapter_encoder(pixel_values)
+
         image_size = pixel_values.shape[2]
         # image must be square
         if image_size != self.config.image_size:
@@ -1394,6 +1420,8 @@ class ScOT(Swinv2PreTrainedModel):
                 prediction = self._upsample(prediction, image_size)
             else:
                 prediction = self._downsample(prediction, image_size)
+
+        prediction = self.adapter_decoder(prediction)
 
         if pixel_mask is not None:
             prediction[pixel_mask] = labels[pixel_mask].type_as(prediction)
