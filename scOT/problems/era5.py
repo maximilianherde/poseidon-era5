@@ -17,9 +17,11 @@ class ERA5_UV(BaseTimeDataset):
         self.reader = h5py.File(data_path, "r")
         self.keys = list(self.reader.keys())
 
-        self.constants = {"time": self.max_num_time_steps,
-                          "mean": torch.tensor([-0.05483689, 0.18707459]).unsqueeze(1).unsqueeze(1),
-                          "std": torch.tensor([5.2594, 4.5301833]).unsqueeze(1).unsqueeze(1)}
+        self.constants = {
+            "time": 14.0 * 4.0,
+            "mean": torch.tensor([-0.05483689, 0.18707459]).unsqueeze(1).unsqueeze(1),
+            "std": torch.tensor([5.2594, 4.5301833]).unsqueeze(1).unsqueeze(1),
+        }
 
         self.input_dim = 2
         self.label_description = "[10U,10V]"
@@ -30,14 +32,21 @@ class ERA5_UV(BaseTimeDataset):
         i, t, t1, t2 = self._idx_map(idx)
         time = t / self.constants["time"]
 
-        input_tensors = list(torch.from_numpy(
-                self.reader[self.keys[idx]][i+self.start + t1][:, :-1]).type(torch.float32) for idx in range(len(self.keys)))
+        input_tensors = list(
+            torch.from_numpy(
+                self.reader[self.keys[idx]][i + self.start + t1][:, :-1]
+            ).type(torch.float32)
+            for idx in range(len(self.keys))
+        )
 
         inputs = torch.stack(input_tensors, dim=0)
 
-        label_tensors = list(torch.from_numpy(
-                self.reader[self.keys[idx]][i+self.start + t2][:, :-1]).type(torch.float32) for idx in range(len(self.keys)))
-
+        label_tensors = list(
+            torch.from_numpy(
+                self.reader[self.keys[idx]][i + self.start + t2][:, :-1]
+            ).type(torch.float32)
+            for idx in range(len(self.keys))
+        )
 
         label = torch.stack(label_tensors, dim=0)
 
