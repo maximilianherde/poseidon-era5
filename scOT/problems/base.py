@@ -8,6 +8,7 @@ from typing import Optional, List, Dict
 from abc import ABC
 import re
 import os
+import numpy as np
 import shutil
 from accelerate.utils import broadcast_object_list
 
@@ -290,6 +291,8 @@ class BaseTimeDataset(BaseDataset, ABC):
         time_step_size: Optional[int] = None,
         fix_input_to_time_step: Optional[int] = None,
         allowed_time_transitions: Optional[List[int]] = None,
+        sensor_history: Optional[int] = 5,
+        sensor_coverage_percent: Optional[int] = 1,
         **kwargs,
     ) -> None:
         """
@@ -302,12 +305,15 @@ class BaseTimeDataset(BaseDataset, ABC):
         assert max_num_time_steps is not None and max_num_time_steps > 0
         assert time_step_size is not None and time_step_size > 0
         assert fix_input_to_time_step is None or fix_input_to_time_step >= 0
+        assert sensor_coverage_percent >= 0 and sensor_coverage_percent <= 100
 
         super().__init__(*args, **kwargs)
         self.max_num_time_steps = max_num_time_steps
         self.time_step_size = time_step_size
         self.fix_input_to_time_step = fix_input_to_time_step
         self.allowed_time_transitions = allowed_time_transitions
+        self.sensor_coverage_percent = sensor_coverage_percent
+        self.sensor_history = sensor_history
 
     def _idx_map(self, idx):
         i = idx // self.multiplier
@@ -322,6 +328,15 @@ class BaseTimeDataset(BaseDataset, ABC):
             t2 = self.time_step_size * (_idx + 1) + self.fix_input_to_time_step
             t = t2 - t1
         return i, t, t1, t2
+
+    def _get_sensor_locations(self):
+        num_sensors = int(self.sensor_coverage_percent / 100 * self.resolution**2)
+        sensor_coords = []
+        for i in range(num_sensors):
+            xloc = np.random.randint(0, self.resolution)
+            yloc = np.random.randint(0, self.resolution)
+            sensor_coords.append((xloc, yloc))
+        return sensor_coords
 
     def post_init(self) -> None:
         """

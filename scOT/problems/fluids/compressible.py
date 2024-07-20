@@ -1,6 +1,7 @@
 import torch
 import h5py
 import copy
+import numpy as np
 from scOT.problems.base import BaseTimeDataset, BaseDataset
 from scOT.problems.fluids.normalization_constants import CONSTANTS
 
@@ -216,6 +217,8 @@ class CompressibleBase(BaseTimeDataset):
             else torch.tensor([False, False, False, False, False])
         )
 
+        self.sensor_coords = self._get_sensor_locations()
+
         self.post_init()
 
     def __getitem__(self, idx):
@@ -232,6 +235,44 @@ class CompressibleBase(BaseTimeDataset):
             .type(torch.float32)
             .reshape(4, self.resolution, self.resolution)
         )
+
+        sensor_values = []
+        for i in range(len(self.sensor_coords)):
+            iloc = self.sensor_coords[i][0]
+            jloc = self.sensor_coords[i][1]
+            if t1 == 0:
+                padding = torch.from_numpy(
+                    self.reader["data"][i + self.start, 0, 0:4, iloc, jloc]
+                ).type(torch.float32)
+                padding = padding.repeat(self.sensor_history, 1)
+                sensor_values.append(padding)
+            elif t1 < self.sensor_history:
+                padding = torch.from_numpy(
+                    self.reader["data"][i + self.start, 0, 0:4, iloc, jloc]
+                ).type(torch.float32)
+                sensor_values = torch.from_numpy(
+                    self.reader["data"][i + self.start, : t1 + 1, 0:4, iloc, jloc]
+                ).type(torch.float32)
+                padding = padding.repeat(self.sensor_history - t1 - 1, 1)
+                sensor_values.append(torch.cat((padding, sensor_values), dim=1))
+            else:
+                sensor_values.append(
+                    torch.from_numpy(
+                        self.reader["data"][
+                            i + self.start,
+                            t1 - self.sensor_history + 1 : t1 + 1,
+                            0:4,
+                            iloc,
+                            jloc,
+                        ]
+                    ).type(torch.float32)
+                )
+        sensor_values = torch.stack(sensor_values, dim=0)
+        sensor_coords = torch.from_numpy(np.stack(self.sensor_coords, axis=0)).type(
+            torch.float32
+        )
+        sensor_coords = (sensor_coords / self.resolution) * 2 - 1
+        sensor_values = (sensor_values - self.constants["mean"]) / self.constants["std"]
 
         inputs[3] = inputs[3] - self.mean_pressure
         label[3] = label[3] - self.mean_pressure
@@ -258,6 +299,8 @@ class CompressibleBase(BaseTimeDataset):
             "labels": label,
             "time": time,
             "pixel_mask": self.pixel_mask,
+            "sensor_values": sensor_values,
+            "sensor_coords": sensor_coords,
         }
 
 
