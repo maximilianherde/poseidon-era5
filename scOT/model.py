@@ -45,6 +45,7 @@ from transformers.models.swinv2.modeling_swinv2 import (
     window_reverse,
     window_partition,
 )
+from transformers.models.perceiver.modeling_perceiver import generate_fourier_features
 from transformers.utils import ModelOutput
 from dataclasses import dataclass
 import torch
@@ -97,6 +98,7 @@ class ScOTConfig(PretrainedConfig):
         channel_slice_list_normalized_loss=None,  # if None will fall back to absolute loss otherwise normalized loss with split channels
         residual_model="convnext",  # "convnext" or "resnet"
         use_conditioning=False,
+        num_frequencies=64,
         learn_residual=False,  # learn the residual for time-dependent problems
         **kwargs,
     ):
@@ -130,6 +132,7 @@ class ScOTConfig(PretrainedConfig):
         self.p = p
         self.channel_slice_list_normalized_loss = channel_slice_list_normalized_loss
         self.residual_model = residual_model
+        self.num_frequencies = num_frequencies
 
 
 class LayerNorm(nn.LayerNorm):
@@ -158,6 +161,156 @@ class ConditionalLayerNorm(nn.Module):
             weight = weight.unsqueeze(1)
             bias = bias.unsqueeze(1)
         return weight * x + bias
+
+
+class CrossAttention(nn.Module):
+    """From https://github.com/huggingface/transformers/blob/v4.42.0/src/transformers/models/perceiver/modeling_perceiver.py#L178
+    PerceiverSelfAttention"""
+
+    def __init__(
+        self,
+        config,
+        qk_channels=None,
+        v_channels=None,
+        num_heads=1,
+        q_dim=None,
+        kv_dim=None,
+    ):
+        super().__init__()
+        self.num_heads = num_heads
+        # Q and K must have the same number of channels.
+        # Default to preserving Q's input's shape.
+        if qk_channels is None:
+            qk_channels = q_dim
+        # V's num_channels determines the shape of the output of QKV-attention.
+        # Default to the same number of channels used in the key-query operation.
+        if v_channels is None:
+            v_channels = qk_channels
+        if qk_channels % num_heads != 0:
+            raise ValueError(
+                f"qk_channels ({qk_channels}) must be divisible by num_heads ({num_heads})."
+            )
+        if v_channels % num_heads != 0:
+            raise ValueError(
+                f"v_channels ({v_channels}) must be divisible by num_heads ({num_heads})."
+            )
+
+        self.qk_channels = qk_channels
+        self.v_channels = v_channels
+        self.qk_channels_per_head = self.qk_channels // num_heads
+        self.v_channels_per_head = self.v_channels // num_heads
+
+        # Layer normalization
+        if config.use_conditioning:
+            layer_norm = ConditionalLayerNorm
+        else:
+            layer_norm = LayerNorm
+        self.layernorm = layer_norm(kv_dim, eps=config.layer_norm_eps)
+
+        # Projection matrices
+        self.query = nn.Linear(q_dim, qk_channels)
+        self.key = nn.Linear(kv_dim, qk_channels)
+        self.value = nn.Linear(kv_dim, v_channels)
+
+        self.logit_scale = nn.Parameter(torch.log(10 * torch.ones((num_heads, 1, 1))))
+
+        self.dropout = nn.Dropout(config.hidden_dropout_prob)
+
+    def transpose_for_scores(self, x, channels_per_head):
+        new_x_shape = x.size()[:-1] + (self.num_heads, channels_per_head)
+        x = x.view(*new_x_shape)
+        return x.permute(0, 2, 1, 3)
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        time: Optional[torch.FloatTensor] = None,
+        attention_mask: Optional[torch.FloatTensor] = None,
+        head_mask: Optional[torch.FloatTensor] = None,
+        inputs: Optional[torch.FloatTensor] = None,
+        inputs_mask: Optional[torch.FloatTensor] = None,
+        output_attentions: Optional[bool] = False,
+    ) -> Tuple[torch.Tensor]:
+        inputs = self.layernorm(inputs, time)
+
+        # Project queries, keys and values to a common feature dimension. If this is instantiated as a cross-attention module,
+        # the keys and values come from the inputs; the attention mask needs to be such that the inputs's non-relevant tokens are not attended to.
+        queries = self.query(hidden_states)
+
+        keys = self.key(inputs)
+        values = self.value(inputs)
+        attention_mask = inputs_mask
+
+        # Reshape channels for multi-head attention.
+        # We reshape from (batch_size, time, channels) to (batch_size, num_heads, time, channels per head)
+        queries = self.transpose_for_scores(queries, self.qk_channels_per_head)
+        keys = self.transpose_for_scores(keys, self.qk_channels_per_head)
+        values = self.transpose_for_scores(values, self.v_channels_per_head)
+
+        attention_scores = nn.functional.normalize(
+            queries, dim=-1
+        ) @ nn.functional.normalize(keys, dim=-1).transpose(-2, -1)
+        logit_scale = torch.clamp(self.logit_scale, max=math.log(1.0 / 0.01)).exp()
+        attention_scores = attention_scores * logit_scale
+
+        _, _, _, v_head_dim = values.shape
+        hiddens = self.num_heads * v_head_dim
+
+        if attention_mask is not None:
+            # Apply the attention mask (precomputed for all layers in PerceiverModel forward() function)
+            attention_scores = attention_scores + attention_mask
+
+        # Normalize the attention scores to probabilities.
+        attention_probs = nn.Softmax(dim=-1)(attention_scores)
+
+        # This is actually dropping out entire tokens to attend to, which might
+        # seem a bit unusual, but is taken from the original Transformer paper.
+        attention_probs = self.dropout(attention_probs)
+
+        # Mask heads if we want to
+        if head_mask is not None:
+            attention_probs = attention_probs * head_mask
+
+        context_layer = torch.matmul(attention_probs, values)
+
+        context_layer = context_layer.permute(0, 2, 1, 3).contiguous()
+        new_context_layer_shape = context_layer.size()[:-2] + (hiddens,)
+        context_layer = context_layer.view(*new_context_layer_shape)
+
+        outputs = (
+            (context_layer, attention_probs) if output_attentions else (context_layer,)
+        )
+
+        return outputs
+
+
+class SparseEmbedding(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.dim_reduce = nn.Linear(
+            config.num_channels + 2 * config.num_frequencies, config.embed_dim
+        )
+        self.num_frequencies = config.num_frequencies
+        self.resolution = config.image_size
+
+    def forward(
+        self,
+        sparse_states: Optional[torch.FloatTensor],
+        sparse_locations: Optional[torch.FloatTensor],
+    ):
+        # sparse_locations has size B x N x K x 2
+        B, S, K, _ = sparse_locations.shape
+        # do sine cosine positional embedding of sparse_locations
+        # B x (N x K) x (2 x num_frequencies)
+        positional_embeddings = generate_fourier_features(
+            sparse_locations.reshape(B, S * K, -1),
+            self.num_frequencies,
+            (self.resolution, self.resolution),
+            False,
+            False,
+        )
+
+        sparse_states = torch.cat([sparse_states, positional_embeddings], dim=-1)
 
 
 class ConvNeXtBlock(nn.Module):
@@ -1228,6 +1381,10 @@ class ScOT(Swinv2PreTrainedModel):
         self.num_features = int(config.embed_dim * 2 ** (self.num_layers_encoder - 1))
 
         self.embeddings = ScOTEmbeddings(config, use_mask_token=use_mask_token)
+        self.sparse_embeddings = SparseEmbedding(config)
+        self.cross_attention = CrossAttention(
+            config, None, None, 1, config.embed_dim, config.num_channels
+        )
         self.encoder = ScOTEncoder(config, self.embeddings.patch_grid)
         self.decoder = ScOTDecoder(config, self.embeddings.patch_grid)
         self.patch_recovery = ScOTPatchRecovery(config)
@@ -1255,6 +1412,7 @@ class ScOT(Swinv2PreTrainedModel):
             ]
         )
 
+        """
         self.adapter_encoder = nn.Sequential(
             nn.Conv2d(
                 config.num_channels, config.num_channels, kernel_size=(121, 1), stride=1
@@ -1278,6 +1436,7 @@ class ScOT(Swinv2PreTrainedModel):
                 stride=1,
             ),  # 240 lon
         )
+        """
 
         self.post_init()
 
@@ -1319,6 +1478,8 @@ class ScOT(Swinv2PreTrainedModel):
         self,
         pixel_values: Optional[torch.FloatTensor] = None,
         time: Optional[torch.FloatTensor] = None,
+        sensor_values: Optional[torch.FloatTensor] = None,
+        sensor_coords: Optional[torch.FloatTensor] = None,
         bool_masked_pos: Optional[torch.BoolTensor] = None,
         head_mask: Optional[torch.FloatTensor] = None,
         pixel_mask: Optional[torch.BoolTensor] = None,
@@ -1357,7 +1518,7 @@ class ScOT(Swinv2PreTrainedModel):
                 [self.num_layers_encoder, self.num_layers_decoder]
             )
 
-        pixel_values = self.adapter_encoder(pixel_values)
+        # pixel_values = self.adapter_encoder(pixel_values)
 
         image_size = pixel_values.shape[2]
         # image must be square
@@ -1370,6 +1531,14 @@ class ScOT(Swinv2PreTrainedModel):
         embedding_output, input_dimensions = self.embeddings(
             pixel_values, bool_masked_pos=bool_masked_pos, time=time
         )
+
+        if sensor_values is not None and sensor_coords is not None:
+            sensor_values = self.sparse_embeddings(sensor_values, sensor_coords, time)
+            embedding_output = self.cross_attention(
+                hidden_states=embedding_output,
+                time=time,
+                inputs=sensor_values,
+            )
 
         encoder_outputs = self.encoder(
             embedding_output,
@@ -1421,7 +1590,7 @@ class ScOT(Swinv2PreTrainedModel):
             else:
                 prediction = self._downsample(prediction, image_size)
 
-        prediction = self.adapter_decoder(prediction)
+        # prediction = self.adapter_decoder(prediction)
 
         if pixel_mask is not None:
             prediction[pixel_mask] = labels[pixel_mask].type_as(prediction)
