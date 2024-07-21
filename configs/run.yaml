@@ -1,15 +1,11 @@
 dataset:
-  value: "wave.Layer"
+  value: "fluids.compressible.RiemannCurved"
 num_trajectories:
   value: 128
 model_name:
-  value: "B"
+  value: "T"
 lr:
   value: 0.00005
-lr_embedding_recovery:
-  value: 0.0005
-lr_time_embedding:
-  value: 0.0005
 weight_decay:
   value: 0.000001
 lr_scheduler:

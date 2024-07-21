@@ -242,19 +242,21 @@ class CompressibleBase(BaseTimeDataset):
             jloc = self.sensor_coords[i][1]
             if t1 == 0:
                 padding = torch.from_numpy(
-                    self.reader["data"][i + self.start, 0, 0:4, iloc, jloc]
+                        self.reader["data"][i + self.start, 0:1, 0:4, iloc, jloc]
                 ).type(torch.float32)
                 padding = padding.repeat(self.sensor_history, 1)
                 sensor_values.append(padding)
             elif t1 < self.sensor_history:
                 padding = torch.from_numpy(
-                    self.reader["data"][i + self.start, 0, 0:4, iloc, jloc]
+                        self.reader["data"][i + self.start, 0:1, 0:4, iloc, jloc]
                 ).type(torch.float32)
-                sensor_values = torch.from_numpy(
+                sensor_value = torch.from_numpy(
                     self.reader["data"][i + self.start, : t1 + 1, 0:4, iloc, jloc]
                 ).type(torch.float32)
-                padding = padding.repeat(self.sensor_history - t1 - 1, 1)
-                sensor_values.append(torch.cat((padding, sensor_values), dim=1))
+                if self.sensor_history - t1 - 1 != 0:
+                    padding = padding.repeat(self.sensor_history - t1 - 1, 1)
+                    sensor_value = torch.cat((padding, sensor_value), dim=0)
+                sensor_values.append(sensor_value)
             else:
                 sensor_values.append(
                     torch.from_numpy(
@@ -272,7 +274,7 @@ class CompressibleBase(BaseTimeDataset):
             torch.float32
         )
         sensor_coords = (sensor_coords / self.resolution) * 2 - 1
-        sensor_values = (sensor_values - self.constants["mean"]) / self.constants["std"]
+        sensor_values = (sensor_values - self.constants["mean"].squeeze()) / self.constants["std"].squeeze()
 
         inputs[3] = inputs[3] - self.mean_pressure
         label[3] = label[3] - self.mean_pressure

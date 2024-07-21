@@ -45,7 +45,6 @@ from transformers.models.swinv2.modeling_swinv2 import (
     window_reverse,
     window_partition,
 )
-from transformers.models.perceiver.modeling_perceiver import generate_fourier_features
 from transformers.utils import ModelOutput
 from dataclasses import dataclass
 import torch
@@ -53,6 +52,7 @@ from torch import nn
 from typing import Optional, Union, Tuple, List
 import math
 import collections
+import numpy as np
 
 
 @dataclass
@@ -284,6 +284,58 @@ class CrossAttention(nn.Module):
         return outputs
 
 
+def generate_fourier_features(pos, num_bands, max_resolution=(224, 224), concat_pos=True, sine_only=False):
+    """
+    Generate a Fourier frequency position encoding with linear spacing.
+
+    Args:
+      pos (`torch.LongTensor` of shape `(batch_size, sequence_length, dim)`):
+        The Tensor containing the position of n points in d dimensional space.
+      num_bands (`int`):
+        The number of frequency bands (K) to use.
+      max_resolution (`Tuple[int]`, *optional*, defaults to (224, 224)):
+        The maximum resolution (i.e. the number of pixels per dim). A tuple representing resolution for each dimension.
+      concat_pos (`bool`, *optional*, defaults to `True`):
+        Whether to concatenate the input position encoding to the Fourier features.
+      sine_only (`bool`, *optional*, defaults to `False`):
+        Whether to use a single phase (sin) or two (sin/cos) for each frequency band.
+
+    Returns:
+      `torch.FloatTensor` of shape `(batch_size, sequence_length, n_channels)`: The Fourier position embeddings. If
+      `concat_pos` is `True` and `sine_only` is `False`, output dimensions are ordered as: [dim_1, dim_2, ..., dim_d,
+      sin(pi*f_1*dim_1), ..., sin(pi*f_K*dim_1), ..., sin(pi*f_1*dim_d), ..., sin(pi*f_K*dim_d), cos(pi*f_1*dim_1),
+      ..., cos(pi*f_K*dim_1), ..., cos(pi*f_1*dim_d), ..., cos(pi*f_K*dim_d)], where dim_i is pos[:, i] and f_k is the
+      kth frequency band.
+    """
+
+    batch_size = pos.shape[0]
+
+    min_freq = 1.0
+    # Nyquist frequency at the target resolution:
+    freq_bands = torch.stack(
+        [torch.linspace(start=min_freq, end=res / 2, steps=num_bands) for res in max_resolution], dim=0
+    ).to(pos.device)
+
+    # Get frequency bands for each spatial dimension.
+    # Output is size [n, d * num_bands]
+    per_pos_features = pos[0, :, :][:, :, None] * freq_bands[None, :, :]
+    per_pos_features = torch.reshape(per_pos_features, [-1, np.prod(per_pos_features.shape[1:])])
+
+    if sine_only:
+        # Output is size [n, d * num_bands]
+        per_pos_features = torch.sin(np.pi * (per_pos_features))
+    else:
+        # Output is size [n, 2 * d * num_bands]
+        per_pos_features = torch.cat(
+            [torch.sin(np.pi * per_pos_features), torch.cos(np.pi * per_pos_features)], dim=-1
+        )
+    # Concatenate the raw input positions.
+    if concat_pos:
+        # Adds d bands to the encoding.
+        per_pos_features = torch.cat([pos, per_pos_features.expand(batch_size, -1, -1)], dim=-1)
+    return per_pos_features
+
+
 class SparseEmbedding(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -299,18 +351,19 @@ class SparseEmbedding(nn.Module):
         sparse_locations: Optional[torch.FloatTensor],
     ):
         # sparse_locations has size B x N x K x 2
-        B, S, K, _ = sparse_locations.shape
+        B, SK, _ = sparse_locations.shape
         # do sine cosine positional embedding of sparse_locations
         # B x (N x K) x (2 x num_frequencies)
         positional_embeddings = generate_fourier_features(
-            sparse_locations.reshape(B, S * K, -1),
+            sparse_locations,
             self.num_frequencies,
             (self.resolution, self.resolution),
             False,
             False,
         )
 
-        sparse_states = torch.cat([sparse_states, positional_embeddings], dim=-1)
+        print(sparse_states.shape, positional_embeddings.shape)
+        sparse_states = torch.cat([sparse_states.reshape(B, SK, -1), positional_embeddings.unsqueeze(-1)], dim=-1)
 
 
 class ConvNeXtBlock(nn.Module):
@@ -1533,7 +1586,7 @@ class ScOT(Swinv2PreTrainedModel):
         )
 
         if sensor_values is not None and sensor_coords is not None:
-            sensor_values = self.sparse_embeddings(sensor_values, sensor_coords, time)
+            sensor_values = self.sparse_embeddings(sensor_values, sensor_coords)
             embedding_output = self.cross_attention(
                 hidden_states=embedding_output,
                 time=time,
