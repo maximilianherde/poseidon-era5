@@ -1401,7 +1401,7 @@ class ScOT(Swinv2PreTrainedModel):
         self.embeddings = ScOTEmbeddings(config, use_mask_token=use_mask_token)
         self.sparse_embeddings = SensorEmbedding(config)
         self.cross_attention = CrossAttention(
-            config, None, None, 1, config.embed_dim, config.num_channels
+            config, None, None, 1, config.embed_dim, config.embed_dim
         )
         self.encoder = ScOTEncoder(config, self.embeddings.patch_grid)
         self.decoder = ScOTDecoder(config, self.embeddings.patch_grid)
@@ -1556,7 +1556,7 @@ class ScOT(Swinv2PreTrainedModel):
                 hidden_states=embedding_output,
                 time=time,
                 inputs=sensor_values,
-            )
+            )[0]
 
         encoder_outputs = self.encoder(
             embedding_output,
