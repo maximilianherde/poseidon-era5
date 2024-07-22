@@ -98,8 +98,8 @@ class ScOTConfig(PretrainedConfig):
         channel_slice_list_normalized_loss=None,  # if None will fall back to absolute loss otherwise normalized loss with split channels
         residual_model="convnext",  # "convnext" or "resnet"
         use_conditioning=False,
-        num_frequencies=64,
         learn_residual=False,  # learn the residual for time-dependent problems
+        sensor_time_history=5,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -132,7 +132,7 @@ class ScOTConfig(PretrainedConfig):
         self.p = p
         self.channel_slice_list_normalized_loss = channel_slice_list_normalized_loss
         self.residual_model = residual_model
-        self.num_frequencies = num_frequencies
+        self.sensor_time_history = sensor_time_history
 
 
 class LayerNorm(nn.LayerNorm):
@@ -284,86 +284,64 @@ class CrossAttention(nn.Module):
         return outputs
 
 
-def generate_fourier_features(pos, num_bands, max_resolution=(224, 224), concat_pos=True, sine_only=False):
-    """
-    Generate a Fourier frequency position encoding with linear spacing.
-
-    Args:
-      pos (`torch.LongTensor` of shape `(batch_size, sequence_length, dim)`):
-        The Tensor containing the position of n points in d dimensional space.
-      num_bands (`int`):
-        The number of frequency bands (K) to use.
-      max_resolution (`Tuple[int]`, *optional*, defaults to (224, 224)):
-        The maximum resolution (i.e. the number of pixels per dim). A tuple representing resolution for each dimension.
-      concat_pos (`bool`, *optional*, defaults to `True`):
-        Whether to concatenate the input position encoding to the Fourier features.
-      sine_only (`bool`, *optional*, defaults to `False`):
-        Whether to use a single phase (sin) or two (sin/cos) for each frequency band.
-
-    Returns:
-      `torch.FloatTensor` of shape `(batch_size, sequence_length, n_channels)`: The Fourier position embeddings. If
-      `concat_pos` is `True` and `sine_only` is `False`, output dimensions are ordered as: [dim_1, dim_2, ..., dim_d,
-      sin(pi*f_1*dim_1), ..., sin(pi*f_K*dim_1), ..., sin(pi*f_1*dim_d), ..., sin(pi*f_K*dim_d), cos(pi*f_1*dim_1),
-      ..., cos(pi*f_K*dim_1), ..., cos(pi*f_1*dim_d), ..., cos(pi*f_K*dim_d)], where dim_i is pos[:, i] and f_k is the
-      kth frequency band.
-    """
-
-    batch_size = pos.shape[0]
-
-    min_freq = 1.0
-    # Nyquist frequency at the target resolution:
-    freq_bands = torch.stack(
-        [torch.linspace(start=min_freq, end=res / 2, steps=num_bands) for res in max_resolution], dim=0
-    ).to(pos.device)
-
-    # Get frequency bands for each spatial dimension.
-    # Output is size [n, d * num_bands]
-    per_pos_features = pos[0, :, :][:, :, None] * freq_bands[None, :, :]
-    per_pos_features = torch.reshape(per_pos_features, [-1, np.prod(per_pos_features.shape[1:])])
-
-    if sine_only:
-        # Output is size [n, d * num_bands]
-        per_pos_features = torch.sin(np.pi * (per_pos_features))
-    else:
-        # Output is size [n, 2 * d * num_bands]
-        per_pos_features = torch.cat(
-            [torch.sin(np.pi * per_pos_features), torch.cos(np.pi * per_pos_features)], dim=-1
-        )
-    # Concatenate the raw input positions.
-    if concat_pos:
-        # Adds d bands to the encoding.
-        per_pos_features = torch.cat([pos, per_pos_features.expand(batch_size, -1, -1)], dim=-1)
-    return per_pos_features
-
-
-class SparseEmbedding(nn.Module):
+class SensorEmbedding(nn.Module):
     def __init__(self, config):
         super().__init__()
-        self.dim_reduce = nn.Linear(
-            config.num_channels + 2 * config.num_frequencies, config.embed_dim
-        )
-        self.num_frequencies = config.num_frequencies
-        self.resolution = config.image_size
+        self.config = config
 
-    def forward(
-        self,
-        sparse_states: Optional[torch.FloatTensor],
-        sparse_locations: Optional[torch.FloatTensor],
-    ):
-        # sparse_locations has size B x N x K x 2
-        B, SK, _ = sparse_locations.shape
-        # do sine cosine positional embedding of sparse_locations
-        # B x (N x K) x (2 x num_frequencies)
-        positional_embeddings = generate_fourier_features(
-            sparse_locations,
-            self.num_frequencies,
-            (self.resolution, self.resolution),
-            False,
-            False,
+        # Linear layer to embed the sensor data (time series)
+        self.data_embedding = nn.Linear(
+            config.sensor_time_history * config.num_channels, config.embed_dim
         )
 
-        print(sparse_states.shape, positional_embeddings.shape)
-        sparse_states = torch.cat([sparse_states.reshape(B, SK, -1), positional_embeddings.unsqueeze(-1)], dim=-1)
+        # Linear layer to embed the sensor location (2D)
+        self.location_embedding = nn.Linear(2, config.embed_dim)
+
+        # Positional encoding for time steps
+        self.positional_encoding = nn.Parameter(
+            torch.randn(config.sensor_time_history, config.embed_dim)
+        )
+
+    def forward(self, data, locations):
+        """
+        data: Tensor of shape (batch_size, num_sensors, time_steps, channels)
+        locations: Tensor of shape (batch_size, num_sensors, 2)
+        """
+        batch_size = data.size(0)
+
+        # Reshape data to (batch_size * num_sensors, time_steps * channels)
+        data = data.view(-1, self.config.sensor_time_history * self.config.num_channels)
+
+        # Embed the time series data
+        data_embedding = self.data_embedding(
+            data
+        )  # Shape (batch_size * num_sensors, embedding_dim)
+
+        # Reshape locations to (batch_size * num_sensors, 2)
+        locations = locations.view(-1, 2)
+
+        # Embed the sensor locations
+        location_embedding = self.location_embedding(
+            locations
+        )  # Shape (batch_size * num_sensors, embedding_dim)
+
+        # Combine the data and location embeddings
+        combined_embedding = data_embedding + location_embedding
+
+        # Reshape back to (batch_size, num_sensors, embedding_dim)
+        combined_embedding = combined_embedding.view(
+            batch_size, -1, self.config.embed_dim
+        )
+
+        # Add positional encoding for time steps
+        pos_encoding = self.positional_encoding.unsqueeze(0).unsqueeze(
+            1
+        )  # Shape (1, 1, time_steps, embedding_dim)
+        combined_embedding = (
+            combined_embedding.unsqueeze(2) + pos_encoding
+        )  # Shape (batch_size, num_sensors, time_steps, embedding_dim)
+
+        return combined_embedding
 
 
 class ConvNeXtBlock(nn.Module):
@@ -1434,7 +1412,7 @@ class ScOT(Swinv2PreTrainedModel):
         self.num_features = int(config.embed_dim * 2 ** (self.num_layers_encoder - 1))
 
         self.embeddings = ScOTEmbeddings(config, use_mask_token=use_mask_token)
-        self.sparse_embeddings = SparseEmbedding(config)
+        self.sparse_embeddings = SensorEmbedding(config)
         self.cross_attention = CrossAttention(
             config, None, None, 1, config.embed_dim, config.num_channels
         )
