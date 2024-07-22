@@ -297,11 +297,6 @@ class SensorEmbedding(nn.Module):
         # Linear layer to embed the sensor location (2D)
         self.location_embedding = nn.Linear(2, config.embed_dim)
 
-        # Positional encoding for time steps
-        self.positional_encoding = nn.Parameter(
-            torch.randn(config.sensor_time_history, config.embed_dim)
-        )
-
     def forward(self, data, locations):
         """
         data: Tensor of shape (batch_size, num_sensors, time_steps, channels)
@@ -332,14 +327,6 @@ class SensorEmbedding(nn.Module):
         combined_embedding = combined_embedding.view(
             batch_size, -1, self.config.embed_dim
         )
-
-        # Add positional encoding for time steps
-        pos_encoding = self.positional_encoding.unsqueeze(0).unsqueeze(
-            1
-        )  # Shape (1, 1, time_steps, embedding_dim)
-        combined_embedding = (
-            combined_embedding.unsqueeze(2) + pos_encoding
-        )  # Shape (batch_size, num_sensors, time_steps, embedding_dim)
 
         return combined_embedding
 
