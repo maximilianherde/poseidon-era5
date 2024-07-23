@@ -260,8 +260,8 @@ class CompressibleBase(BaseTimeDataset):
 
         sensor_coords = (self.sensor_coords / self.resolution) * 2 - 1
         sensor_values = (
-            sensor_values - self.constants["mean"].squeeze()
-        ) / self.constants["std"].squeeze()
+            sensor_values - self.constants["mean"].squeeze().unsqueeze(0)
+        ) / self.constants["std"].squeeze().unsqueeze(0)
 
         inputs[3] = inputs[3] - self.mean_pressure
         label[3] = label[3] - self.mean_pressure
