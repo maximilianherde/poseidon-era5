@@ -6,6 +6,7 @@ classes for all datasets.
 from torch.utils.data import Dataset, ConcatDataset
 from typing import Optional, List, Dict
 from abc import ABC
+import torch
 import re
 import os
 import numpy as np
@@ -332,11 +333,11 @@ class BaseTimeDataset(BaseDataset, ABC):
     def _get_sensor_locations(self):
         num_sensors = int(self.sensor_coverage_percent / 100 * self.resolution**2)
         sensor_coords = []
-        for i in range(num_sensors):
+        for _ in range(num_sensors):
             xloc = np.random.randint(0, self.resolution)
             yloc = np.random.randint(0, self.resolution)
             sensor_coords.append((xloc, yloc))
-        return sensor_coords
+        return torch.from_numpy(np.stack(sensor_coords, axis=0)).type(torch.float32)
 
     def post_init(self) -> None:
         """
