@@ -243,8 +243,9 @@ class CompressibleBase(BaseTimeDataset):
                 0:4,
             ]
         ).type(torch.float32)
-        sensor_values = sensor_values.index_select(2, self.sensor_coords[:, 0].long())
-        sensor_values = sensor_values.index_select(3, self.sensor_coords[:, 1].long())
+        sensor_values = sensor_values[
+            self.sensor_coords[:, 0], self.sensor_coords[:, 1]
+        ]
 
         if t1 == 0:
             padding = sensor_values[0:1]
