@@ -1403,6 +1403,11 @@ class ScOT(Swinv2PreTrainedModel):
         self.cross_attention = CrossAttention(
             config, None, None, 1, config.embed_dim, config.embed_dim
         )
+        if config.use_conditioning:
+            layer_norm = ConditionalLayerNorm
+        else:
+            layer_norm = LayerNorm
+        self.ln = layer_norm(config.embed_dim)
         self.encoder = ScOTEncoder(config, self.embeddings.patch_grid)
         self.decoder = ScOTDecoder(config, self.embeddings.patch_grid)
         self.patch_recovery = ScOTPatchRecovery(config)
@@ -1550,13 +1555,17 @@ class ScOT(Swinv2PreTrainedModel):
             pixel_values, bool_masked_pos=bool_masked_pos, time=time
         )
 
-        if sensor_values is not None and sensor_coords is not None:
-            sensor_values = self.sparse_embeddings(sensor_values, sensor_coords)
-            embedding_output = self.cross_attention(
-                hidden_states=embedding_output,
-                time=time,
-                inputs=sensor_values,
-            )[0]
+        if sensor_values is None or sensor_coords is None:
+            raise ValueError("sensor_values and sensor_coords cannot be None")
+
+        sensor_values = self.sparse_embeddings(sensor_values, sensor_coords)
+        xa_output = self.cross_attention(
+            hidden_states=embedding_output,
+            time=time,
+            inputs=sensor_values,
+        )[0]
+
+        embedding_output = self.ln(xa_output + embedding_output, time)
 
         encoder_outputs = self.encoder(
             embedding_output,
