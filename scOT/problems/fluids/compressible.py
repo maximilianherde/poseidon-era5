@@ -244,25 +244,25 @@ class CompressibleBase(BaseTimeDataset):
             ]
         ).type(torch.float32)
         sensor_values = sensor_values[
-            self.sensor_coords[:, 0], self.sensor_coords[:, 1]
+        :, :, self.sensor_coords[:, 0].long(), self.sensor_coords[:, 1].long()
         ]
 
         if t1 == 0:
             padding = sensor_values[0:1]
-            sensor_values = padding.repeat(self.sensor_history, 1)
+            sensor_values = padding.repeat(self.sensor_history, 1, 1)
         elif t1 < self.sensor_history:
             padding = sensor_values[0:1]
             sensor_values = sensor_values[: t1 + 1]
             if self.sensor_history - t1 - 1 != 0:
-                padding = padding.repeat(self.sensor_history - t1 - 1, 1)
+                padding = padding.repeat(self.sensor_history - t1 - 1, 1, 1)
                 sensor_values = torch.cat((padding, sensor_values), dim=0)
         else:
             sensor_values = sensor_values[t1 - self.sensor_history + 1 : t1 + 1]
 
         sensor_coords = (self.sensor_coords / self.resolution) * 2 - 1
         sensor_values = (
-            sensor_values - self.constants["mean"].squeeze().unsqueeze(0)
-        ) / self.constants["std"].squeeze().unsqueeze(0)
+            sensor_values - self.constants["mean"].squeeze().unsqueeze(0).unsqueeze(-1)
+        ) / self.constants["std"].squeeze().unsqueeze(0).unsqueeze(-1)
 
         inputs[3] = inputs[3] - self.mean_pressure
         label[3] = label[3] - self.mean_pressure
