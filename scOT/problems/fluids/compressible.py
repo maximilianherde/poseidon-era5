@@ -236,43 +236,28 @@ class CompressibleBase(BaseTimeDataset):
             .reshape(4, self.resolution, self.resolution)
         )
 
-        sensor_values = []
-        for i_ in range(len(self.sensor_coords)):
-            iloc = self.sensor_coords[i_][0]
-            jloc = self.sensor_coords[i_][1]
-            if t1 == 0:
-                padding = torch.from_numpy(
-                    self.reader["data"][i + self.start, 0:1, 0:4, iloc, jloc]
-                ).type(torch.float32)
-                padding = padding.repeat(self.sensor_history, 1)
-                sensor_values.append(padding)
-            elif t1 < self.sensor_history:
-                padding = torch.from_numpy(
-                    self.reader["data"][i + self.start, 0:1, 0:4, iloc, jloc]
-                ).type(torch.float32)
-                sensor_value = torch.from_numpy(
-                    self.reader["data"][i + self.start, : t1 + 1, 0:4, iloc, jloc]
-                ).type(torch.float32)
-                if self.sensor_history - t1 - 1 != 0:
-                    padding = padding.repeat(self.sensor_history - t1 - 1, 1)
-                    sensor_value = torch.cat((padding, sensor_value), dim=0)
-                sensor_values.append(sensor_value)
-            else:
-                sensor_values.append(
-                    torch.from_numpy(
-                        self.reader["data"][
-                            i + self.start,
-                            t1 - self.sensor_history + 1 : t1 + 1,
-                            0:4,
-                            iloc,
-                            jloc,
-                        ]
-                    ).type(torch.float32)
-                )
-        sensor_values = torch.stack(sensor_values, dim=0)
-        sensor_coords = torch.from_numpy(np.stack(self.sensor_coords, axis=0)).type(
-            torch.float32
-        )
+        sensor_values = torch.from_numpy(
+            self.reader["data"][
+                i + self.start,
+                :,
+                0:4,
+                self.sensor_coords[:, 0],
+                self.sensor_coords[:, 1],
+            ]
+        ).type(torch.float32)
+
+        if t1 == 0:
+            padding = sensor_values[0:1]
+            sensor_values = padding.repeat(self.sensor_history, 1)
+        elif t1 < self.sensor_history:
+            padding = sensor_values[0:1]
+            sensor_values = sensor_values[: t1 + 1]
+            if self.sensor_history - t1 - 1 != 0:
+                padding = padding.repeat(self.sensor_history - t1 - 1, 1)
+                sensor_values = torch.cat((padding, sensor_values), dim=0)
+        else:
+            sensor_values = sensor_values[t1 - self.sensor_history + 1 : t1 + 1]
+
         sensor_coords = (sensor_coords / self.resolution) * 2 - 1
         sensor_values = (
             sensor_values - self.constants["mean"].squeeze()
