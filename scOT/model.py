@@ -106,7 +106,7 @@ class ScOTConfig(PretrainedConfig):
         sensor_embed_dim=512,
         sensor_num_heads=8,
         sensor_encoder_self_attends=4,
-        **kwargs,
+        cross_attention_shape_for_attention="q" ** kwargs,
     ):
         super().__init__(**kwargs)
 
@@ -143,6 +143,7 @@ class ScOTConfig(PretrainedConfig):
         self.sensor_embed_dim = sensor_embed_dim
         self.sensor_num_heads = sensor_num_heads
         self.sensor_encoder_self_attends = sensor_encoder_self_attends
+        self.cross_attention_shape_for_attention = cross_attention_shape_for_attention
 
 
 class LayerNorm(nn.LayerNorm):
