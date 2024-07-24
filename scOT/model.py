@@ -1411,11 +1411,17 @@ class ScOT(Swinv2PreTrainedModel):
         self.ln = layer_norm(config.embed_dim)
         self.ln2 = layer_norm(config.embed_dim)
 
-        print(config.mlp_ratio)
-        print(config.embed_dim)
         self.fc1 = nn.Linear(config.embed_dim, int(config.mlp_ratio) * config.embed_dim)
         self.fc2 = nn.Linear(int(config.mlp_ratio) * config.embed_dim, config.embed_dim)
-        self.fc3 = nn.Linear(config.embed_dim, config.embed_dim)
+
+        self.cross_attention2 = CrossAttention(
+            config, None, None, 1, config.embed_dim, config.embed_dim
+        )
+        self.ln3 = layer_norm(config.embed_dim)
+        self.ln4 = layer_norm(config.embed_dim)
+
+        self.fc3 = nn.Linear(config.embed_dim, int(config.mlp_ratio) * config.embed_dim)
+        self.fc4 = nn.Linear(int(config.mlp_ratio) * config.embed_dim, config.embed_dim)
 
         self.encoder = ScOTEncoder(config, self.embeddings.patch_grid)
         self.decoder = ScOTDecoder(config, self.embeddings.patch_grid)
@@ -1443,32 +1449,6 @@ class ScOT(Swinv2PreTrainedModel):
                 for i, depth in enumerate(config.skip_connections)
             ]
         )
-
-        """
-        self.adapter_encoder = nn.Sequential(
-            nn.Conv2d(
-                config.num_channels, config.num_channels, kernel_size=(121, 1), stride=1
-            ),  # 128 lon.
-            nn.ConvTranspose2d(
-                config.num_channels, config.num_channels, kernel_size=9, stride=1
-            ),  # 128 lat
-        )
-
-        self.adapter_decoder = nn.Sequential(
-            nn.Conv2d(
-                config.num_out_channels,
-                config.num_out_channels,
-                kernel_size=9,
-                stride=1,
-            ),  # 120 lat
-            nn.ConvTranspose2d(
-                config.num_out_channels,
-                config.num_out_channels,
-                kernel_size=(121, 1),
-                stride=1,
-            ),  # 240 lon
-        )
-        """
 
         self.post_init()
 
@@ -1550,8 +1530,6 @@ class ScOT(Swinv2PreTrainedModel):
                 [self.num_layers_encoder, self.num_layers_decoder]
             )
 
-        # pixel_values = self.adapter_encoder(pixel_values)
-
         image_size = pixel_values.shape[2]
         # image must be square
         if image_size != self.config.image_size:
@@ -1573,20 +1551,13 @@ class ScOT(Swinv2PreTrainedModel):
             time=time,
             inputs=sensor_values,
         )[0]
-
         xa_output_ln = self.ln(xa_output, time)
-
         embedding_output_mid = embedding_output + xa_output_ln
-
-        embedding_output = getattr(nn.functional,
-                                   self.config.hidden_act)(self.fc1(embedding_output_mid))
-        embedding_output = getattr(nn.functional,
-                                   self.config.hidden_act)(self.fc2(embedding_output))
-
-        embedding_output = self.fc3(embedding_output)
-
+        embedding_output = getattr(nn.functional, self.config.hidden_act)(
+            self.fc1(embedding_output_mid)
+        )
+        embedding_output = self.fc2(embedding_output)
         embedding_output = self.ln2(embedding_output, time)
-
         embedding_output = embedding_output + embedding_output_mid
 
         encoder_outputs = self.encoder(
@@ -1626,6 +1597,21 @@ class ScOT(Swinv2PreTrainedModel):
         )
 
         sequence_output = decoder_output[0]
+
+        xa_output = self.cross_attention2(
+            hidden_states=sequence_output,
+            time=time,
+            inputs=sensor_values,
+        )[0]
+        xa_output_ln = self.ln3(xa_output, time)
+        sequence_output_mid = sequence_output + xa_output_ln
+        sequence_output = getattr(nn.functional, self.config.hidden_act)(
+            self.fc3(sequence_output_mid)
+        )
+        sequence_output = self.fc4(sequence_output)
+        sequence_output = self.ln4(sequence_output, time)
+        sequence_output = sequence_output + sequence_output_mid
+
         prediction = self.patch_recovery(sequence_output)
         # The following can be used for learning just the residual for time-dependent problems
         if self.config.learn_residual:
