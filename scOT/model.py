@@ -515,6 +515,7 @@ class SensorEncoder(nn.Module):
 
         layer_outputs = self.cross_attention(
             hidden_states,
+            time,
             attention_mask=attention_mask,
             head_mask=None,
             inputs=inputs,
