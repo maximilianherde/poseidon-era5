@@ -106,7 +106,8 @@ class ScOTConfig(PretrainedConfig):
         sensor_embed_dim=512,
         sensor_num_heads=8,
         sensor_encoder_self_attends=4,
-        cross_attention_shape_for_attention="q" ** kwargs,
+        cross_attention_shape_for_attention="q",
+        **kwargs,
     ):
         super().__init__(**kwargs)
 
