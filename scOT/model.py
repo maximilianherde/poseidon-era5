@@ -35,6 +35,8 @@ SOFTWARE.
 from transformers import (
     Swinv2PreTrainedModel,
     PretrainedConfig,
+    activations,
+    modeling_outputs,
 )
 from transformers.models.swinv2.modeling_swinv2 import (
     Swinv2EncoderOutput,
@@ -100,6 +102,10 @@ class ScOTConfig(PretrainedConfig):
         use_conditioning=False,
         learn_residual=False,  # learn the residual for time-dependent problems
         sensor_time_history=5,
+        sensor_num_latents=256,
+        sensor_embed_dim=512,
+        sensor_num_heads=8,
+        sensor_encoder_self_attends=4,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -133,6 +139,10 @@ class ScOTConfig(PretrainedConfig):
         self.channel_slice_list_normalized_loss = channel_slice_list_normalized_loss
         self.residual_model = residual_model
         self.sensor_time_history = sensor_time_history
+        self.sensor_num_latents = sensor_num_latents
+        self.sensor_embed_dim = sensor_embed_dim
+        self.sensor_num_heads = sensor_num_heads
+        self.sensor_encoder_self_attends = sensor_encoder_self_attends
 
 
 class LayerNorm(nn.LayerNorm):
@@ -163,7 +173,7 @@ class ConditionalLayerNorm(nn.Module):
         return weight * x + bias
 
 
-class CrossAttention(nn.Module):
+class PerceiverTypeSelfAttention(nn.Module):
     """From https://github.com/huggingface/transformers/blob/v4.42.0/src/transformers/models/perceiver/modeling_perceiver.py#L178
     PerceiverSelfAttention"""
 
@@ -200,13 +210,6 @@ class CrossAttention(nn.Module):
         self.qk_channels_per_head = self.qk_channels // num_heads
         self.v_channels_per_head = self.v_channels // num_heads
 
-        # Layer normalization
-        if config.use_conditioning:
-            layer_norm = ConditionalLayerNorm
-        else:
-            layer_norm = LayerNorm
-        self.layernorm = layer_norm(kv_dim, eps=config.layer_norm_eps)
-
         # Projection matrices
         self.query = nn.Linear(q_dim, qk_channels)
         self.key = nn.Linear(kv_dim, qk_channels)
@@ -224,22 +227,24 @@ class CrossAttention(nn.Module):
     def forward(
         self,
         hidden_states: torch.Tensor,
-        time: Optional[torch.FloatTensor] = None,
         attention_mask: Optional[torch.FloatTensor] = None,
         head_mask: Optional[torch.FloatTensor] = None,
         inputs: Optional[torch.FloatTensor] = None,
         inputs_mask: Optional[torch.FloatTensor] = None,
         output_attentions: Optional[bool] = False,
     ) -> Tuple[torch.Tensor]:
-        inputs = self.layernorm(inputs, time)
-
         # Project queries, keys and values to a common feature dimension. If this is instantiated as a cross-attention module,
         # the keys and values come from the inputs; the attention mask needs to be such that the inputs's non-relevant tokens are not attended to.
+        is_cross_attention = inputs is not None
         queries = self.query(hidden_states)
 
-        keys = self.key(inputs)
-        values = self.value(inputs)
-        attention_mask = inputs_mask
+        if is_cross_attention:
+            keys = self.key(inputs)
+            values = self.value(inputs)
+            attention_mask = inputs_mask
+        else:
+            keys = self.key(hidden_states)
+            values = self.value(hidden_states)
 
         # Reshape channels for multi-head attention.
         # We reshape from (batch_size, time, channels) to (batch_size, num_heads, time, channels per head)
@@ -284,6 +289,282 @@ class CrossAttention(nn.Module):
         return outputs
 
 
+class PerceiverTypeAttention(nn.Module):
+    def __init__(
+        self,
+        config,
+        is_cross_attention=False,
+        qk_channels=None,
+        v_channels=None,
+        num_heads=1,
+        q_dim=None,
+        kv_dim=None,
+    ):
+        super().__init__()
+        # MultiHead attention
+        if is_cross_attention and qk_channels is None:
+            if config.cross_attention_shape_for_attention == "q":
+                qk_channels = q_dim
+            elif config.cross_attention_shape_for_attention == "kv":
+                qk_channels = kv_dim
+            else:
+                raise ValueError(
+                    f"Unknown value {config.cross_attention_shape_for_attention} for "
+                    "cross_attention_shape_for_attention."
+                )
+        else:
+            if qk_channels is None:
+                qk_channels = q_dim
+            if v_channels is None:
+                v_channels = qk_channels
+        self.self = PerceiverTypeSelfAttention(
+            config,
+            qk_channels=qk_channels,
+            v_channels=v_channels,
+            num_heads=num_heads,
+            q_dim=q_dim,
+            kv_dim=kv_dim,
+        )
+        # dense block
+        output_channels = None
+        if is_cross_attention:
+            output_channels = q_dim
+        else:
+            if output_channels is None:
+                output_channels = v_channels
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        attention_mask: Optional[torch.FloatTensor] = None,
+        head_mask: Optional[torch.FloatTensor] = None,
+        inputs: Optional[torch.FloatTensor] = None,
+        inputs_mask: Optional[torch.FloatTensor] = None,
+        output_attentions: Optional[bool] = False,
+    ) -> Tuple[torch.Tensor]:
+        self_outputs = self.self(
+            hidden_states,
+            attention_mask,
+            head_mask,
+            inputs,
+            inputs_mask,
+            output_attentions,
+        )
+
+        # Output projection
+        attention_output = self_outputs[0]
+
+        outputs = (attention_output,) + self_outputs[
+            1:
+        ]  # add attentions if we output them
+        return outputs
+
+
+class PerceiverTypeEmbeddings(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.latents = nn.Parameter(
+            torch.randn(config.sensor_num_latents, config.sensor_embed_dim)
+        )
+
+    def forward(self, batch_size: int):
+        return self.latents.expand(batch_size, -1, -1)
+
+
+class PerceiverTypeLayer(nn.Module):
+    def __init__(
+        self,
+        config,
+        is_cross_attention=False,
+        qk_channels=None,
+        v_channels=None,
+        num_heads=1,
+        q_dim=None,
+        kv_dim=None,
+    ):
+        super().__init__()
+        self.attention = PerceiverTypeAttention(
+            config,
+            is_cross_attention=is_cross_attention,
+            qk_channels=qk_channels,
+            v_channels=v_channels,
+            num_heads=num_heads,
+            q_dim=q_dim,
+            kv_dim=kv_dim,
+        )
+        if config.use_conditioning:
+            layer_norm = ConditionalLayerNorm
+        else:
+            layer_norm = LayerNorm
+        self.ln1 = layer_norm(config.sensor_embed_dim)
+        self.ln2 = layer_norm(config.sensor_embed_dim)
+        if isinstance(config.hidden_act, str):
+            self.intermediate_act_fn = activations.ACT2FN[config.hidden_act]
+        else:
+            self.intermediate_act_fn = config.hidden_act
+        self.linear1 = nn.Linear(
+            config.sensor_embed_dim, config.sensor_embed_dim * config.mlp_ratio
+        )
+        self.linear2 = (
+            nn.Linear(
+                config.sensor_embed_dim * config.mlp_ratio, config.sensor_embed_dim
+            ),
+        )
+        self.dropout = nn.Dropout(config.hidden_dropout_prob)
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        time: torch.Tensor,
+        attention_mask: Optional[torch.FloatTensor] = None,
+        head_mask: Optional[torch.FloatTensor] = None,
+        inputs: Optional[torch.FloatTensor] = None,
+        inputs_mask: Optional[torch.FloatTensor] = None,
+        output_attentions: Optional[bool] = False,
+    ) -> Tuple[torch.Tensor]:
+        attention_outputs = self.attention(
+            hidden_states,
+            attention_mask,
+            head_mask,
+            inputs,
+            inputs_mask,
+            output_attentions,
+        )
+        attention_output = attention_outputs[0]
+        outputs = attention_outputs[1:]  # add attentions if we output attention weights
+        attention_output = self.ln1(attention_output, time)
+        intermediate_output = attention_output + hidden_states
+        layer_output = self.linear1(intermediate_output)
+        layer_output = self.intermediate_act_fn(layer_output)
+        layer_output = self.dropout(layer_output)
+        layer_output = self.linear2(layer_output)
+        layer_output = self.ln2(layer_output, time)
+        layer_output = layer_output + intermediate_output
+        outputs = (layer_output,) + outputs
+
+        return outputs
+
+
+class SensorEncoder(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.config = config
+
+        # Check that we can use multihead-attention with these shapes.
+        if config.sensor_embed_dim % config.sensor_num_heads != 0:
+            raise ValueError(
+                f"num_z_channels ({config.sensor_embed_dim}) must be divisible by"
+                f" num_self_attend_heads ({config.sensor_num_heads})."
+            )
+        if config.sensor_embed_dim % config.sensor_num_heads != 0:
+            raise ValueError(
+                f"num_z_channels ({config.sensor_embed_dim}) must be divisible by"
+                f" num_cross_attend_heads ({config.sensor_num_heads})."
+            )
+
+        self.latent_embedding = PerceiverTypeEmbeddings(config)
+
+        # Construct the cross attention layer.
+        self.cross_attention = PerceiverTypeLayer(
+            config,
+            is_cross_attention=True,
+            qk_channels=None,
+            v_channels=None,
+            num_heads=config.sensor_num_heads,
+            q_dim=config.sensor_embed_dim,
+            kv_dim=config.sensor_embed_dim,
+        )
+
+        # Construct a single block of self-attention layers.
+        # We get deeper architectures by applying this block more than once.
+        self_attention_layers = []
+        for _ in range(config.sensor_encoder_self_attends):
+            layer = PerceiverTypeLayer(
+                config,
+                is_cross_attention=False,
+                qk_channels=None,
+                v_channels=None,
+                num_heads=config.sensor_num_heads,
+                q_dim=config.sensor_embed_dim,
+                kv_dim=config.sensor_embed_dim,
+            )
+            self_attention_layers.append(layer)
+
+        self.self_attends = nn.ModuleList(self_attention_layers)
+
+    def forward(
+        self,
+        time: torch.Tensor,
+        attention_mask: Optional[torch.FloatTensor] = None,
+        head_mask: Optional[torch.FloatTensor] = None,
+        inputs: Optional[torch.FloatTensor] = None,
+        inputs_mask: Optional[torch.FloatTensor] = None,
+        output_attentions: Optional[bool] = False,
+        output_hidden_states: Optional[bool] = False,
+        return_dict: Optional[bool] = True,
+    ):
+        all_hidden_states = () if output_hidden_states else None
+        all_self_attentions = () if output_attentions else None
+        all_cross_attentions = () if output_attentions else None
+
+        batch_size = time.size(0)
+
+        hidden_states = self.latent_embedding(batch_size)
+
+        layer_outputs = self.cross_attention(
+            hidden_states,
+            attention_mask=attention_mask,
+            head_mask=None,
+            inputs=inputs,
+            inputs_mask=inputs_mask,
+            output_attentions=output_attentions,
+        )
+        hidden_states = layer_outputs[0]
+
+        if output_attentions:
+            all_cross_attentions = all_cross_attentions + (layer_outputs[1],)
+
+        # Apply the block of self-attention layers more than once:
+        for _ in range(self.config.num_blocks):
+            for i, layer_module in enumerate(self.self_attends):
+                if output_hidden_states:
+                    all_hidden_states = all_hidden_states + (hidden_states,)
+
+                layer_head_mask = head_mask[i] if head_mask is not None else None
+
+                layer_outputs = layer_module(
+                    hidden_states,
+                    attention_mask=attention_mask,
+                    head_mask=layer_head_mask,
+                    output_attentions=output_attentions,
+                )
+
+                hidden_states = layer_outputs[0]
+                if output_attentions:
+                    all_self_attentions = all_self_attentions + (layer_outputs[1],)
+
+            if output_hidden_states:
+                all_hidden_states = all_hidden_states + (hidden_states,)
+
+        if not return_dict:
+            return tuple(
+                v
+                for v in [
+                    hidden_states,
+                    all_hidden_states,
+                    all_self_attentions,
+                    all_cross_attentions,
+                ]
+                if v is not None
+            )
+        return modeling_outputs.BaseModelOutputWithCrossAttentions(
+            last_hidden_state=hidden_states,
+            hidden_states=all_hidden_states,
+            attentions=all_self_attentions,
+            cross_attentions=all_cross_attentions,
+        )
+
+
 class SensorEmbedding(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -291,11 +572,11 @@ class SensorEmbedding(nn.Module):
 
         # Linear layer to embed the sensor data (time series)
         self.data_embedding = nn.Linear(
-            config.sensor_time_history * config.num_channels, config.embed_dim
+            config.sensor_time_history * config.num_channels, config.sensor_embed_dim
         )
 
         # Linear layer to embed the sensor location (2D)
-        self.location_embedding = nn.Linear(2, config.embed_dim)
+        self.location_embedding = nn.Linear(2, config.sensor_embed_dim)
 
     def forward(self, data, locations):
         """
@@ -325,7 +606,7 @@ class SensorEmbedding(nn.Module):
 
         # Reshape back to (batch_size, num_sensors, embedding_dim)
         combined_embedding = combined_embedding.view(
-            batch_size, -1, self.config.embed_dim
+            batch_size, -1, self.config.sensor_embed_dim
         )
 
         return combined_embedding
@@ -1400,8 +1681,14 @@ class ScOT(Swinv2PreTrainedModel):
 
         self.embeddings = ScOTEmbeddings(config, use_mask_token=use_mask_token)
         self.sparse_embeddings = SensorEmbedding(config)
-        self.cross_attention = CrossAttention(
-            config, None, None, 1, config.embed_dim, config.embed_dim
+        self.sensor_encoder = SensorEncoder(config)
+        self.cross_attention = PerceiverTypeSelfAttention(
+            config,
+            None,
+            None,
+            config.sensor_num_heads,
+            config.embed_dim,
+            config.sensor_embed_dim,
         )
         if config.use_conditioning:
             layer_norm = ConditionalLayerNorm
@@ -1434,32 +1721,6 @@ class ScOT(Swinv2PreTrainedModel):
                 for i, depth in enumerate(config.skip_connections)
             ]
         )
-
-        """
-        self.adapter_encoder = nn.Sequential(
-            nn.Conv2d(
-                config.num_channels, config.num_channels, kernel_size=(121, 1), stride=1
-            ),  # 128 lon.
-            nn.ConvTranspose2d(
-                config.num_channels, config.num_channels, kernel_size=9, stride=1
-            ),  # 128 lat
-        )
-
-        self.adapter_decoder = nn.Sequential(
-            nn.Conv2d(
-                config.num_out_channels,
-                config.num_out_channels,
-                kernel_size=9,
-                stride=1,
-            ),  # 120 lat
-            nn.ConvTranspose2d(
-                config.num_out_channels,
-                config.num_out_channels,
-                kernel_size=(121, 1),
-                stride=1,
-            ),  # 240 lon
-        )
-        """
 
         self.post_init()
 
@@ -1541,8 +1802,6 @@ class ScOT(Swinv2PreTrainedModel):
                 [self.num_layers_encoder, self.num_layers_decoder]
             )
 
-        # pixel_values = self.adapter_encoder(pixel_values)
-
         image_size = pixel_values.shape[2]
         # image must be square
         if image_size != self.config.image_size:
@@ -1559,13 +1818,14 @@ class ScOT(Swinv2PreTrainedModel):
             raise ValueError("sensor_values and sensor_coords cannot be None")
 
         sensor_values = self.sparse_embeddings(sensor_values, sensor_coords)
+        sensor_values = self.sensor_encoder(time, inputs=sensor_values)
         xa_output = self.cross_attention(
             hidden_states=embedding_output,
             time=time,
             inputs=sensor_values,
         )[0]
 
-        embedding_output = self.ln(xa_output + embedding_output, time)
+        embedding_output = self.ln(xa_output, time) + embedding_output
 
         encoder_outputs = self.encoder(
             embedding_output,
@@ -1616,8 +1876,6 @@ class ScOT(Swinv2PreTrainedModel):
                 prediction = self._upsample(prediction, image_size)
             else:
                 prediction = self._downsample(prediction, image_size)
-
-        # prediction = self.adapter_decoder(prediction)
 
         if pixel_mask is not None:
             prediction[pixel_mask] = labels[pixel_mask].type_as(prediction)
