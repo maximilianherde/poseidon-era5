@@ -407,11 +407,10 @@ class PerceiverTypeLayer(nn.Module):
         self.linear1 = nn.Linear(
             config.sensor_embed_dim, config.sensor_embed_dim * int(config.mlp_ratio)
         )
-        self.linear2 = (
-            nn.Linear(
-                config.sensor_embed_dim * int(config.mlp_ratio), config.sensor_embed_dim
-            ),
+        self.linear2 = nn.Linear(
+            config.sensor_embed_dim * int(config.mlp_ratio), config.sensor_embed_dim
         )
+
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
 
     def forward(
