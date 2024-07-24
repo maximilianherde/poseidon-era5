@@ -405,11 +405,11 @@ class PerceiverTypeLayer(nn.Module):
         else:
             self.intermediate_act_fn = config.hidden_act
         self.linear1 = nn.Linear(
-            config.sensor_embed_dim, config.sensor_embed_dim * config.mlp_ratio
+            config.sensor_embed_dim, config.sensor_embed_dim * int(config.mlp_ratio)
         )
         self.linear2 = (
             nn.Linear(
-                config.sensor_embed_dim * config.mlp_ratio, config.sensor_embed_dim
+                config.sensor_embed_dim * int(config.mlp_ratio), config.sensor_embed_dim
             ),
         )
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
