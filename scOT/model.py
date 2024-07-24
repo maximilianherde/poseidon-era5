@@ -527,26 +527,25 @@ class SensorEncoder(nn.Module):
             all_cross_attentions = all_cross_attentions + (layer_outputs[1],)
 
         # Apply the block of self-attention layers more than once:
-        for _ in range(self.config.num_blocks):
-            for i, layer_module in enumerate(self.self_attends):
-                if output_hidden_states:
-                    all_hidden_states = all_hidden_states + (hidden_states,)
-
-                layer_head_mask = head_mask[i] if head_mask is not None else None
-
-                layer_outputs = layer_module(
-                    hidden_states,
-                    attention_mask=attention_mask,
-                    head_mask=layer_head_mask,
-                    output_attentions=output_attentions,
-                )
-
-                hidden_states = layer_outputs[0]
-                if output_attentions:
-                    all_self_attentions = all_self_attentions + (layer_outputs[1],)
-
+        for i, layer_module in enumerate(self.self_attends):
             if output_hidden_states:
                 all_hidden_states = all_hidden_states + (hidden_states,)
+
+            layer_head_mask = head_mask[i] if head_mask is not None else None
+
+            layer_outputs = layer_module(
+                hidden_states,
+                attention_mask=attention_mask,
+                head_mask=layer_head_mask,
+                output_attentions=output_attentions,
+            )
+
+            hidden_states = layer_outputs[0]
+            if output_attentions:
+                all_self_attentions = all_self_attentions + (layer_outputs[1],)
+
+        if output_hidden_states:
+            all_hidden_states = all_hidden_states + (hidden_states,)
 
         if not return_dict:
             return tuple(
