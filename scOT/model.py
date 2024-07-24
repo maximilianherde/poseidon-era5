@@ -535,6 +535,7 @@ class SensorEncoder(nn.Module):
 
             layer_outputs = layer_module(
                 hidden_states,
+                time=time,
                 attention_mask=attention_mask,
                 head_mask=layer_head_mask,
                 output_attentions=output_attentions,
