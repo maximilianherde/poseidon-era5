@@ -1823,7 +1823,7 @@ class ScOT(Swinv2PreTrainedModel):
         sensor_values = self.sensor_encoder(time, inputs=sensor_values)
         xa_output = self.cross_attention(
             hidden_states=embedding_output,
-            inputs=sensor_values,
+            inputs=sensor_values.last_hidden_state,
         )[0]
 
         embedding_output = self.ln(xa_output, time) + embedding_output
