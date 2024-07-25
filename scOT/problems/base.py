@@ -106,6 +106,14 @@ def get_dataset(dataset, **kwargs):
                     raise ValueError(f"Unknown dataset {dataset}")
             else:
                 raise ValueError(f"Unknown dataset {dataset}")
+        elif "fluids.unknown" in dataset:
+            if "fluids.unknown.Triple" in dataset:
+                from .fluids.triple import Triple as dset
+
+                default_time_settings = {
+                    "max_num_time_steps": 20,
+                    "time_step_size": 10,
+                }
         else:
             raise ValueError(f"Unknown dataset {dataset}")
         if "out" in dataset:
