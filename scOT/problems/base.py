@@ -162,6 +162,13 @@ def get_dataset(dataset, **kwargs):
             from .era5 import ERA5_UV as dset
         else:
             raise ValueError(f"Unknown dataset {dataset}")
+    elif "advection" in dataset:
+        if "advection.rho" in dataset:
+            default_time_settings = {"max_num_time_steps": 20, "time_step_size": 1}
+            kwargs = {**default_time_settings, **kwargs}
+            from .advection import Advection as dset
+        else:
+            raise ValueError(f"Unknown dataset {dataset}")
     else:
         raise ValueError(f"Unknown dataset {dataset}")
 

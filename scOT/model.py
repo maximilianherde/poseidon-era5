@@ -1357,7 +1357,6 @@ class ScOT(Swinv2PreTrainedModel):
                 [self.num_layers_encoder, self.num_layers_decoder]
             )
 
-        pixel_values = self.adapter_encoder(pixel_values)
 
         image_size = pixel_values.shape[2]
         # image must be square
@@ -1421,7 +1420,6 @@ class ScOT(Swinv2PreTrainedModel):
             else:
                 prediction = self._downsample(prediction, image_size)
 
-        prediction = self.adapter_decoder(prediction)
 
         if pixel_mask is not None:
             prediction[pixel_mask] = labels[pixel_mask].type_as(prediction)
