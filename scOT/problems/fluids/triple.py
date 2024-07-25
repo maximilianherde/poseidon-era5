@@ -24,7 +24,9 @@ class Triple(BaseTimeDataset):
                     0.007216560674947469,
                     0.37139811680921125,
                 ]
-            ).unsqueeze(1).unsqueeze(1),
+            )
+            .unsqueeze(1)
+            .unsqueeze(1),
             "std": torch.tensor(
                 [
                     0.5340755544511663,
@@ -32,7 +34,9 @@ class Triple(BaseTimeDataset):
                     0.16361558298495668,
                     0.16093527025207108,
                 ]
-            ).unsqueeze(1).unsqueeze(1),
+            )
+            .unsqueeze(1)
+            .unsqueeze(1),
             "time": 25.0,
         }
 
@@ -49,12 +53,25 @@ class Triple(BaseTimeDataset):
         time = time / self.constants["time"]
 
         inputs = (
-            torch.from_numpy(self.reader["data"][i + self.start + t1, 0:4])
+            torch.from_numpy(
+                self.reader["data"][
+                    (i + self.start) * (self.time_step_size * self.max_num_time_steps)
+                    + t1,
+                    0:4,
+                ]
+            )
             .type(torch.float32)
             .reshape(4, self.resolution, self.resolution)
         )
         label = (
-            torch.from_numpy(self.reader["data"][i + self.start + t2, 0:4])
+            torch.from_numpy(
+                self.reader["data"][
+                    (i + self.start)
+                    + (self.time_step_size * self.max_num_time_steps)
+                    + t2,
+                    0:4,
+                ]
+            )
             .type(torch.float32)
             .reshape(4, self.resolution, self.resolution)
         )
