@@ -4,7 +4,7 @@ from scOT.problems.base import BaseTimeDataset
 
 
 class Triple(BaseTimeDataset):
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, tracer=False, **kwargs):
         super().__init__(*args, **kwargs)
 
         self.N_max = 5014 // (self.time_step_size * self.max_num_time_steps)
@@ -24,7 +24,7 @@ class Triple(BaseTimeDataset):
                     0.007216560674947469,
                     0.37139811680921125,
                 ]
-            ),
+            ).unsqueeze(1).unsqueeze(1),
             "std": torch.tensor(
                 [
                     0.5340755544511663,
@@ -32,7 +32,7 @@ class Triple(BaseTimeDataset):
                     0.16361558298495668,
                     0.16093527025207108,
                 ]
-            ),
+            ).unsqueeze(1).unsqueeze(1),
             "time": 25.0,
         }
 
