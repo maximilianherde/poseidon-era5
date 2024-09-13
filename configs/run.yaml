@@ -1,11 +1,11 @@
 dataset:
   value: "fluids.compressible.RiemannCurved"
 num_trajectories:
-  value: 128
+  value: 512
 model_name:
   value: "T"
 lr:
-  value: 0.00005
+  value: 0.0005
 weight_decay:
   value: 0.000001
 lr_scheduler:
@@ -13,10 +13,10 @@ lr_scheduler:
 warmup_ratio:
   value: 0.0
 early_stopping_patience:
-  value: 200
-num_epochs:
-  value: 200
-batch_size:
   value: 40
+num_epochs:
+  value: 400
+batch_size:
+  value: 80
 max_grad_norm:
   value: 5.0

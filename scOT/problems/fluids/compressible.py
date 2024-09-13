@@ -264,6 +264,9 @@ class CompressibleBase(BaseTimeDataset):
             sensor_values - self.constants["mean"].squeeze().unsqueeze(0).unsqueeze(-1)
         ) / self.constants["std"].squeeze().unsqueeze(0).unsqueeze(-1)
 
+        inputs = inputs[:, ::4, ::4]
+        inputs = torch.nn.functional.interpolate(inputs.unsqueeze(0), (128, 128), mode="bilinear", antialias=True, align_corners=True).squeeze(0)
+
         inputs[3] = inputs[3] - self.mean_pressure
         label[3] = label[3] - self.mean_pressure
 
