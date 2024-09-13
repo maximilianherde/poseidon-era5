@@ -217,8 +217,6 @@ class CompressibleBase(BaseTimeDataset):
             else torch.tensor([False, False, False, False, False])
         )
 
-        self.sensor_coords = self._get_sensor_locations()
-
         self.post_init()
 
     def __getitem__(self, idx):
@@ -235,34 +233,6 @@ class CompressibleBase(BaseTimeDataset):
             .type(torch.float32)
             .reshape(4, self.resolution, self.resolution)
         )
-
-        sensor_values = torch.from_numpy(
-            self.reader["data"][
-                i + self.start,
-                :,
-                0:4,
-            ]
-        ).type(torch.float32)
-        sensor_values = sensor_values[
-        :, :, self.sensor_coords[:, 0].long(), self.sensor_coords[:, 1].long()
-        ]
-
-        if t1 == 0:
-            padding = sensor_values[0:1]
-            sensor_values = padding.repeat(self.sensor_history, 1, 1)
-        elif t1 < self.sensor_history:
-            padding = sensor_values[0:1]
-            sensor_values = sensor_values[: t1 + 1]
-            if self.sensor_history - t1 - 1 != 0:
-                padding = padding.repeat(self.sensor_history - t1 - 1, 1, 1)
-                sensor_values = torch.cat((padding, sensor_values), dim=0)
-        else:
-            sensor_values = sensor_values[t1 - self.sensor_history + 1 : t1 + 1]
-
-        sensor_coords = (self.sensor_coords / self.resolution) * 2 - 1
-        sensor_values = (
-            sensor_values - self.constants["mean"].squeeze().unsqueeze(0).unsqueeze(-1)
-        ) / self.constants["std"].squeeze().unsqueeze(0).unsqueeze(-1)
 
         inputs = inputs[:, ::4, ::4]
         inputs = torch.nn.functional.interpolate(inputs.unsqueeze(0), (128, 128), mode="bilinear", antialias=True, align_corners=True).squeeze(0)
@@ -292,8 +262,6 @@ class CompressibleBase(BaseTimeDataset):
             "labels": label,
             "time": time,
             "pixel_mask": self.pixel_mask,
-            "sensor_values": sensor_values,
-            "sensor_coords": sensor_coords,
         }
 
 

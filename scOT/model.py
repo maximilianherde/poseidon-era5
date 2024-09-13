@@ -1682,21 +1682,6 @@ class ScOT(Swinv2PreTrainedModel):
         self.num_features = int(config.embed_dim * 2 ** (self.num_layers_encoder - 1))
 
         self.embeddings = ScOTEmbeddings(config, use_mask_token=use_mask_token)
-        self.sparse_embeddings = SensorEmbedding(config)
-        self.sensor_encoder = SensorEncoder(config)
-        self.cross_attention = PerceiverTypeSelfAttention(
-            config,
-            None,
-            None,
-            config.sensor_num_heads,
-            config.embed_dim,
-            config.sensor_embed_dim,
-        )
-        if config.use_conditioning:
-            layer_norm = ConditionalLayerNorm
-        else:
-            layer_norm = LayerNorm
-        self.ln = layer_norm(config.embed_dim)
         self.encoder = ScOTEncoder(config, self.embeddings.patch_grid)
         self.decoder = ScOTDecoder(config, self.embeddings.patch_grid)
         self.patch_recovery = ScOTPatchRecovery(config)
@@ -1764,8 +1749,6 @@ class ScOT(Swinv2PreTrainedModel):
         self,
         pixel_values: Optional[torch.FloatTensor] = None,
         time: Optional[torch.FloatTensor] = None,
-        sensor_values: Optional[torch.FloatTensor] = None,
-        sensor_coords: Optional[torch.FloatTensor] = None,
         bool_masked_pos: Optional[torch.BoolTensor] = None,
         head_mask: Optional[torch.FloatTensor] = None,
         pixel_mask: Optional[torch.BoolTensor] = None,
@@ -1815,19 +1798,7 @@ class ScOT(Swinv2PreTrainedModel):
         embedding_output, input_dimensions = self.embeddings(
             pixel_values, bool_masked_pos=bool_masked_pos, time=time
         )
-
-        if sensor_values is None or sensor_coords is None:
-            raise ValueError("sensor_values and sensor_coords cannot be None")
-
-        sensor_values = self.sparse_embeddings(sensor_values, sensor_coords)
-        sensor_values = self.sensor_encoder(time, inputs=sensor_values)
-        xa_output = self.cross_attention(
-            hidden_states=embedding_output,
-            inputs=sensor_values.last_hidden_state,
-        )[0]
-
-        embedding_output = self.ln(xa_output, time) + embedding_output
-
+        
         encoder_outputs = self.encoder(
             embedding_output,
             input_dimensions,
