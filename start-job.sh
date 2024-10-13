@@ -1,6 +1,6 @@
 #!/bin/bash
 
-#SBATCH --time=30:00:00
+#SBATCH --time=60:00:00
 #SBATCH --ntasks=8
 #SBATCH --mem-per-cpu=4000
 #SBATCH --gpus=1
