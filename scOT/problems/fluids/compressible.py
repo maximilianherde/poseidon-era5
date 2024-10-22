@@ -2,6 +2,7 @@ import torch
 import h5py
 import copy
 import numpy as np
+import scipy
 from scOT.problems.base import BaseTimeDataset, BaseDataset
 from scOT.problems.fluids.normalization_constants import CONSTANTS
 
@@ -225,26 +226,29 @@ class CompressibleBase(BaseTimeDataset):
         i, t, t1, t2 = self._idx_map(idx)
         time = t / self.constants["time"]
 
-        inputs = (
-            torch.from_numpy(self.reader["data"][i + self.start, t1, 0:4])
-            .type(torch.float32)
-            .reshape(4, self.resolution, self.resolution)
-        )
-        label = (
-            torch.from_numpy(self.reader["data"][i + self.start, t2, 0:4])
-            .type(torch.float32)
-            .reshape(4, self.resolution, self.resolution)
-        )
-
-        sensor_values = torch.from_numpy(
-            self.reader["data"][
+        #inputs = (
+        #    torch.from_numpy(self.reader["data"][i + self.start, t1, 0:4])
+        #    .type(torch.float32)
+        #    .reshape(4, self.resolution, self.resolution)
+        #)
+        d = self.reader["data"][
                 i + self.start,
                 :,
                 0:4,
             ]
+        label = (
+            torch.from_numpy(d[t2])
+            .type(torch.float32)
+            .reshape(4, self.resolution, self.resolution)
+        )
+
+        inp = d[t1]
+
+        sensor_values = torch.from_numpy(
+            d
         ).type(torch.float32)
         sensor_values = sensor_values[
-        :, :, self.sensor_coords[:, 0].long(), self.sensor_coords[:, 1].long()
+            :, :, self.sensor_coords[:, 0].long(), self.sensor_coords[:, 1].long()
         ]
 
         if t1 == 0:
@@ -263,6 +267,20 @@ class CompressibleBase(BaseTimeDataset):
         sensor_values = (
             sensor_values - self.constants["mean"].squeeze().unsqueeze(0).unsqueeze(-1)
         ) / self.constants["std"].squeeze().unsqueeze(0).unsqueeze(-1)
+
+        # Step 1: Subsample the input array by taking every 4th pixel
+        inputs_subsampled = inp[:, ::4, ::4]
+        
+        # Step 2: Interpolate to (128, 128) using scipy.ndimage.zoom
+        # The zoom factor for each axis (C stays the same, H and W scale to 128)
+        zoom_factors = (1, 128 / inputs_subsampled.shape[1], 128 / inputs_subsampled.shape[2])
+        
+        # Resize using bilinear interpolation
+        inputs = torch.from_numpy(scipy.ndimage.zoom(inputs_subsampled, zoom_factors, order=1)).type(torch.float32).reshape(4, self.resolution, self.resolution)  # order=1 for bilinear
+
+
+        #inputs = inputs[:, ::4, ::4]
+        #inputs = torch.nn.functional.interpolate(inputs.unsqueeze(0), (128, 128), mode="bilinear", antialias=True, align_corners=True).squeeze(0)
 
         inputs[3] = inputs[3] - self.mean_pressure
         label[3] = label[3] - self.mean_pressure

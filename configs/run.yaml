@@ -1,9 +1,9 @@
 dataset:
-  value: "fluids.compressible.RiemannKelvinHelmholtz"
+  value: "fluids.compressible.RiemannCurved"
 num_trajectories:
-  value: 128
+  value: 512
 model_name:
-  value: "S"
+  value: "T"
 lr:
   value: 0.0005
 weight_decay:
@@ -11,12 +11,12 @@ weight_decay:
 lr_scheduler:
   value: "cosine"
 warmup_ratio:
-  value: 0.05
+  value: 0.0
 early_stopping_patience:
-  value: 40
+  value: 20
 num_epochs:
-  value: 400
+  value: 200
 batch_size:
-  value: 40
+  value: 80
 max_grad_norm:
   value: 5.0
