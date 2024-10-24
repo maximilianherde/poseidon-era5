@@ -293,7 +293,7 @@ class CompressibleBase(BaseTimeDataset):
         """
 
         sensor_values = self.sensor_values[idx]
-        inputs = (
+        inp = (
             torch.from_numpy(self.reader["data"][i + self.start, t1, 0:4])
             .type(torch.float32)
             .reshape(4, self.resolution, self.resolution)
