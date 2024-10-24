@@ -222,6 +222,33 @@ class CompressibleBase(BaseTimeDataset):
 
         self.post_init()
 
+        sensor_val_list = []
+        for idx in range(self.__len__()):
+            i, t, t1, t2 = self._idx_map(idx)
+            d = self.reader["data"][i + self.start, :, 0:4]
+            sensor_values = torch.from_numpy(
+            d
+            ).type(torch.float32)
+            sensor_values = sensor_values[
+                :, :, self.sensor_coords[:, 0].long(), self.sensor_coords[:, 1].long()
+            ]
+            if t1 == 0:
+                padding = sensor_values[0:1]
+                sensor_values = padding.repeat(self.sensor_history, 1, 1)
+            elif t1 < self.sensor_history:
+                padding = sensor_values[0:1]
+                sensor_values = sensor_values[: t1 + 1]
+                if self.sensor_history - t1 - 1 != 0:
+                    padding = padding.repeat(self.sensor_history - t1 - 1, 1, 1)
+                    sensor_values = torch.cat((padding, sensor_values), dim=0)
+            else:
+                sensor_values = sensor_values[t1 - self.sensor_history + 1 : t1 + 1]
+
+            sensor_val_list.append(sensor_values)
+
+        self.sensor_values = torch.stack(sensor_val_list, dim=0)
+            
+
     def __getitem__(self, idx):
         i, t, t1, t2 = self._idx_map(idx)
         time = t / self.constants["time"]
@@ -231,6 +258,7 @@ class CompressibleBase(BaseTimeDataset):
         #    .type(torch.float32)
         #    .reshape(4, self.resolution, self.resolution)
         #)
+        """
         d = self.reader["data"][
                 i + self.start,
                 :,
@@ -262,8 +290,21 @@ class CompressibleBase(BaseTimeDataset):
                 sensor_values = torch.cat((padding, sensor_values), dim=0)
         else:
             sensor_values = sensor_values[t1 - self.sensor_history + 1 : t1 + 1]
+        """
 
-        sensor_coords = (self.sensor_coords / self.resolution) * 2 - 1
+        sensor_values = self.sensor_values[idx]
+        inputs = (
+            torch.from_numpy(self.reader["data"][i + self.start, t1, 0:4])
+            .type(torch.float32)
+            .reshape(4, self.resolution, self.resolution)
+        )
+        label = (
+            torch.from_numpy(self.reader["data"][i + self.start, t2, 0:4])
+            .type(torch.float32)
+            .reshape(4, self.resolution, self.resolution)
+        )
+        
+        sensor_coords = self.sensor_coords / self.resolution
         sensor_values = (
             sensor_values - self.constants["mean"].squeeze().unsqueeze(0).unsqueeze(-1)
         ) / self.constants["std"].squeeze().unsqueeze(0).unsqueeze(-1)
